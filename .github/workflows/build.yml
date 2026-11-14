@@ -2,10 +2,23 @@ name: Build
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build.yml'
+      - 'scripts/**'
+      - 'src/**'
+      - 'configs/**'
+      - 'dtbs/**'
+      - '.gitmodules'
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v6
@@ -35,3 +48,4 @@ jobs:
         with:
           name: openstick-debian
           path: files/*
+          if-no-files-found: error

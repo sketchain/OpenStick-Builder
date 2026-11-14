@@ -1,46 +1,60 @@
 #!/bin/sh -e
 
-CHROOT=${CHROOT=$(pwd)/rootfs}
-SRCDIR=$(pwd)/src
+CHROOT=${CHROOT:-$(pwd)/rootfs}
 
-# install gt dependencies
-chroot ${CHROOT} qemu-aarch64-static /bin/sh \
-    -c " apt update; apt install libconfig-dev -y"
+if [ "$(uname -m)" != aarch64 ]; then
+    echo 'Gadget-tool compilation requires a native ARM64 host.' >&2
+    exit 1
+fi
 
-# build and install gt
-(
-cd src/libusbgx/
-autoreconf -i
-)
+# Compile against the target Debian libraries, rather than the Ubuntu host.
+# rootfs.tgz was already created, so these build dependencies stay out of the image.
+work="$CHROOT/tmp/openstick-build"
+rm -rf "$work"
+mkdir -p "$work"
+cp -a src/libusbgx "$work/libusbgx"
+cp -a src/gt "$work/gt"
 
-mkdir -p build
-(
-cd build
-PKG_CONFIG_PATH=${CHROOT}/usr/lib/aarch64-linux-gnu/pkgconfig \
-    ${SRCDIR}/libusbgx/configure \
-        --host aarch64-linux-gnu \
-        --prefix=/usr \
-        --with-sysroot=${CHROOT}
-)
-make -C build DESTDIR=$(pwd)/dist CFLAGS="--sysroot=${CHROOT}" install
-make -C build CFLAGS="--sysroot=${CHROOT}" install
+chroot "$CHROOT" /bin/sh -ex <<'EOF'
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y --no-install-recommends \
+    autoconf automake build-essential cmake libconfig-dev libtool pkg-config
 
-rm -rf build/*
-PKG_CONFIG_PATH=${CHROOT}/usr/lib/pkgconfig:${CHROOT}/usr/lib/aarch64-linux-gnu/pkgconfig \
-    cmake -DCMAKE_INSTALL_PREFIX=/usr \
-        -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
-        -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
-        -DCMAKE_C_FLAGS=-I$(pwd)/dist/usr/include \
-        -DCMAKE_C_FLAGS=-L$(pwd)/dist/usr/lib \
-        -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
-        -DCMAKE_SYSROOT=${CHROOT} \
-        -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
-        -S ${SRCDIR}/gt/source \
-        -B build
+cd /tmp/openstick-build/libusbgx
+autoreconf -fi
+./configure --prefix=/usr --libdir=/usr/lib --disable-examples --disable-static
+make -j "$(nproc)"
+make install
+make DESTDIR=/tmp/openstick-build/dist install
+ldconfig
 
-make -C build DESTDIR=$(pwd)/dist install
+cmake -S /tmp/openstick-build/gt/source -B /tmp/openstick-build/gt-build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_INSTALL_SYSCONFDIR=/etc \
+    -DENABLE_MANUAL_PAGE=OFF
+cmake --build /tmp/openstick-build/gt-build --parallel "$(nproc)"
+DESTDIR=/tmp/openstick-build/dist cmake --install /tmp/openstick-build/gt-build
 
-rm -rf dist/usr/share dist/usr/lib/cmake dist/usr/lib/pkgconfig \
-    dist/usr/lib/*a dist/usr/bin/ga* dist/usr/bin/s* dist/usr/include
+# Stage only the runtime library, executable, and configuration.
+rm -rf /tmp/openstick-build/dist/usr/include \
+    /tmp/openstick-build/dist/usr/lib/cmake \
+    /tmp/openstick-build/dist/usr/lib/pkgconfig \
+    /tmp/openstick-build/dist/usr/share
+rm -f /tmp/openstick-build/dist/usr/lib/*.la
+EOF
 
+test -x "$work/dist/usr/bin/gt"
+# Fail here if the freshly built ARM64 executable has unresolved runtime libraries.
+ldd_output=$(chroot "$CHROOT" /usr/bin/ldd /tmp/openstick-build/dist/usr/bin/gt)
+printf '%s\n' "$ldd_output"
+if printf '%s\n' "$ldd_output" | grep -q 'not found'; then
+    exit 1
+fi
+
+rm -rf dist
+cp -a "$work/dist" dist
+mkdir -p dist/etc/gt
 cp -a configs/templates dist/etc/gt
+rm -rf "$work"

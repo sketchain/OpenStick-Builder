@@ -8,10 +8,12 @@ This builder uses the precompiled [kernel](https://pkgs.postmarketos.org/package
 
 ## Build Instructions
 ### Build locally
-This has been tested to work on **Ubuntu 22.04**
+Use a native **ARM64 Ubuntu 22.04** host. GitHub Actions uses
+`ubuntu-22.04-arm`; rootfs creation and gadget-tool compilation run natively,
+without QEMU. The default target is Debian 13 (`trixie`).
 - clone
   ```shell
-  git clone --recurse-submodules https://github.com/kinsamanka/OpenStick-Builder.git
+  git clone --recurse-submodules https://github.com/sketchain/OpenStick-Builder.git
   cd OpenStick-Builder/
   ```
 #### Quick
@@ -54,6 +56,7 @@ This has been tested to work on **Ubuntu 22.04**
 The generated firmware files will be stored under the `files` directory
 
 ### On the cloud using Github Actions
+Changes to build inputs on `main` trigger a build automatically. To start one manually:
 1. Fork this repo
 2. Run the [Build workflow](../../actions/workflows/build.yml)
    - click and run ***Run workflow***

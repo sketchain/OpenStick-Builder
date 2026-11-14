@@ -1,29 +1,29 @@
 #!/bin/sh -e
 
+if [ "$(uname -m)" != aarch64 ]; then
+    echo 'This builder requires a native ARM64 host (use ubuntu-22.04-arm in Actions).' >&2
+    exit 1
+fi
+
+export DEBIAN_FRONTEND=noninteractive
+
 apt update
 apt install -y \
     android-sdk-libsparse-utils \
-    autoconf \
+    build-essential \
     ca-certificates \
-    automake \
-    binfmt-support \
-    cmake \
     debian-archive-keyring \
     debootstrap \
     device-tree-compiler \
+    e2fsprogs \
     fdisk \
-    g++-aarch64-linux-gnu \
-    gcc-aarch64-linux-gnu \
     gcc-arm-none-eabi \
-    libtool \
-    make \
-    pkg-config \
     python3-cryptography \
     python3-pyasn1-modules \
     python3-pycryptodome \
-    qemu-user-static \
     unzip \
-    wget
+    wget \
+    xz-utils
 
 # Ubuntu 22.04 ships a keyring predating Debian 13 (the current stable).
 # Keep debootstrap signature verification enabled by updating the trusted keys.

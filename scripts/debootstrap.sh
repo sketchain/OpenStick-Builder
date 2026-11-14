@@ -1,39 +1,64 @@
 #!/bin/sh -e
 
-CHROOT=${CHROOT=$(pwd)/rootfs}
-RELEASE=${RELEASE=stable}
+CHROOT=${CHROOT:-$(pwd)/rootfs}
+RELEASE=${RELEASE:-trixie}
 HOST_NAME=${HOST_NAME=openstick-debian}
+
+if [ "$(uname -m)" != aarch64 ]; then
+    echo 'Rootfs creation requires a native ARM64 host.' >&2
+    exit 1
+fi
 
 rm -rf ${CHROOT}
 
-debootstrap --foreign --arch arm64 \
-    --keyring /usr/share/keyrings/debian-archive-keyring.gpg ${RELEASE} ${CHROOT}
+kernel_apk=
+cleanup() {
+    status=$?
+    trap - EXIT
+    if [ "$status" -ne 0 ] && [ -f "$CHROOT/debootstrap/debootstrap.log" ]; then
+        tail -n 100 "$CHROOT/debootstrap/debootstrap.log"
+    fi
+    for a in dev/pts dev sys proc; do
+        if mountpoint -q "$CHROOT/$a"; then
+            umount "$CHROOT/$a" || status=1
+        fi
+    done
+    if [ -n "$kernel_apk" ]; then
+        rm -f "$kernel_apk"
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
 
-cp $(which qemu-aarch64-static) ${CHROOT}/usr/bin
-
-chroot ${CHROOT} qemu-aarch64-static /bin/bash /debootstrap/debootstrap --second-stage
+# Both bootstrap stages execute directly on the ARM64 runner.
+debootstrap --arch arm64 --include=ca-certificates \
+    --keyring /usr/share/keyrings/debian-archive-keyring.gpg \
+    "$RELEASE" "$CHROOT" https://deb.debian.org/debian
 
 cat << EOF > ${CHROOT}/etc/apt/sources.list
-deb http://deb.debian.org/debian ${RELEASE} main contrib non-free-firmware
-deb http://deb.debian.org/debian-security/ ${RELEASE}-security main contrib non-free-firmware
-deb http://deb.debian.org/debian ${RELEASE}-updates main contrib non-free-firmware
+deb https://deb.debian.org/debian ${RELEASE} main contrib non-free-firmware
+deb https://deb.debian.org/debian-security/ ${RELEASE}-security main contrib non-free-firmware
+deb https://deb.debian.org/debian ${RELEASE}-updates main contrib non-free-firmware
 EOF
 
 mount -t proc proc ${CHROOT}/proc/
 mount -t sysfs sys ${CHROOT}/sys/
 mount -o bind /dev/ ${CHROOT}/dev/
 mount -o bind /dev/pts/ ${CHROOT}/dev/pts/
-mount -o bind /run ${CHROOT}/run/
+
+# Do not start services inside the image while installing packages.
+printf '#!/bin/sh\nexit 101\n' > "$CHROOT/usr/sbin/policy-rc.d"
+chmod 0755 "$CHROOT/usr/sbin/policy-rc.d"
 
 cp scripts/setup.sh ${CHROOT}
-chroot ${CHROOT} qemu-aarch64-static /bin/sh -c /setup.sh
+chroot "$CHROOT" /bin/sh -e /setup.sh
 
 # cleanup
-for a in proc sys dev/pts dev run; do
+for a in dev/pts dev sys proc; do
     umount ${CHROOT}/${a}
 done;
 
-rm -f ${CHROOT}/setup.sh
+rm -f "$CHROOT/setup.sh" "$CHROOT/usr/sbin/policy-rc.d"
 echo -n > ${CHROOT}/root/.bash_history
 
 echo ${HOST_NAME} > ${CHROOT}/etc/hostname
@@ -55,8 +80,10 @@ SUBSYSTEM=="net", ACTION=="add|change|move", ENV{DEVTYPE}=="gadget", ENV{NM_UNMA
 EOF
 
 # install kernel
-wget -O - http://mirror.postmarketos.org/postmarketos/v24.06/aarch64/linux-postmarketos-qcom-msm8916-6.6-r5.apk \
-    | tar xkzf - -C ${CHROOT} --exclude=.PKGINFO --exclude=.SIGN* 2>/dev/null
+kernel_apk=$(mktemp)
+wget --https-only --tries=3 --timeout=30 -O "$kernel_apk" \
+    https://mirror.postmarketos.org/postmarketos/v24.06/aarch64/linux-postmarketos-qcom-msm8916-6.6-r5.apk
+tar xkzf "$kernel_apk" --ignore-zeros -C "$CHROOT" --exclude=.PKGINFO --exclude='.SIGN*'
 
 mkdir -p ${CHROOT}/boot/extlinux
 cp configs/extlinux.conf ${CHROOT}/boot/extlinux
@@ -71,4 +98,4 @@ mkdir -p ${CHROOT}/lib/firmware/msm-firmware-loader
 echo "PARTUUID=80780b1d-0fe1-27d3-23e4-9244e62f8c46\t/boot\text2\tdefaults\t0 2" > ${CHROOT}/etc/fstab
 
 # backup rootfs
-tar cpzf rootfs.tgz --exclude="usr/bin/qemu-aarch64-static" -C rootfs .
+tar cpzf rootfs.tgz -C "$CHROOT" .
